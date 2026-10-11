@@ -1,5 +1,6 @@
 import { loadSettings, saveSettings } from '../state/store.js';
 import { createAudioEngine } from '../audio/manager.js';
+import { createPlayerFlow } from './playerFlow.js';
 
 export function initApp() {
   if (window.AudioTechRuntime) return window.AudioTechRuntime;
@@ -16,22 +17,13 @@ export function initApp() {
     }
   });
 
-  const state = {
-    settings,
-    audio,
-    engine,
-    countdown: Boolean(settings.countdown),
-    queue: Array.isArray(settings.queue) ? settings.queue : [],
-    currentIndex: -1,
-    shuffle: Boolean(settings.shuffle),
-    repeat: settings.repeat || 'off'
-  };
-
   const ui = {
     play: document.querySelector('#play'),
     prev: document.querySelector('#prev'),
     next: document.querySelector('#next'),
     stop: document.querySelector('#stop'),
+    shuffle: document.querySelector('#shuffle'),
+    repeat: document.querySelector('#repeat'),
     seek: document.querySelector('#seek'),
     vol: document.querySelector('#vol'),
     pan: document.querySelector('#pan'),
@@ -42,8 +34,29 @@ export function initApp() {
     preset: document.querySelector('#preset')
   };
 
+  const player = createPlayerFlow({
+    audio,
+    settings,
+    onStatus: (message) => {
+      if (ui.status) ui.status.textContent = message;
+    }
+  });
+
+  const state = {
+    settings,
+    audio,
+    engine,
+    player,
+    countdown: Boolean(settings.countdown),
+    queue: player.state.queue,
+    currentIndex: player.state.currentIndex,
+    shuffle: player.state.shuffle,
+    repeat: player.state.repeat
+  };
+
   function setStatus(message) {
     if (ui.status) ui.status.textContent = message;
+    player.setStatus(message);
   }
 
   function updateVolumeUI() {
@@ -62,23 +75,38 @@ export function initApp() {
     }
   }
 
+  function refreshRepeatToggle() {
+    if (!ui.repeat) return;
+    ui.repeat.textContent = { off: '🔁', all: '🔁 ∞', one: '🔂' }[player.state.repeat || 'off'];
+    ui.repeat.classList.toggle('on', player.state.repeat !== 'off');
+  }
+
+  function refreshShuffleToggle() {
+    if (!ui.shuffle) return;
+    ui.shuffle.classList.toggle('on', player.state.shuffle);
+  }
+
   function bindPlayback() {
     if (ui.play) {
       ui.play.addEventListener('click', async () => {
+        if (!audio.src && player.state.queue.length) {
+          player.loadTrack(player.state.currentIndex >= 0 ? player.state.currentIndex : 0, true);
+          return;
+        }
+
         if (!audio.src) {
           setStatus('No hay una pista cargada.');
           return;
         }
 
-        const playing = audio.paused;
-        if (playing) {
-          await engine.play();
-          ui.play.textContent = '⏸';
+        if (audio.paused) {
+          const ok = await engine.play();
+          if (ok && ui.play) ui.play.textContent = '⏸';
           return;
         }
 
         engine.pause();
-        ui.play.textContent = '▶';
+        if (ui.play) ui.play.textContent = '▶';
       });
     }
 
@@ -91,14 +119,24 @@ export function initApp() {
     }
 
     if (ui.prev) {
-      ui.prev.addEventListener('click', () => {
-        setStatus('Prev no migrado aún: lógica del flujo principal sigue en el HTML original.');
-      });
+      ui.prev.addEventListener('click', () => player.prev());
     }
 
     if (ui.next) {
-      ui.next.addEventListener('click', () => {
-        setStatus('Next no migrado aún: lógica del flujo principal sigue en el HTML original.');
+      ui.next.addEventListener('click', () => player.next(true));
+    }
+
+    if (ui.shuffle) {
+      ui.shuffle.addEventListener('click', () => {
+        player.toggleShuffle();
+        refreshShuffleToggle();
+      });
+    }
+
+    if (ui.repeat) {
+      ui.repeat.addEventListener('click', () => {
+        player.cycleRepeat();
+        refreshRepeatToggle();
       });
     }
   }
@@ -138,6 +176,15 @@ export function initApp() {
         audio.currentTime = Number(ui.seek.value) || 0;
       });
     }
+
+    if (ui.time) {
+      ui.time.addEventListener('click', () => {
+        state.countdown = !state.countdown;
+        state.settings.countdown = state.countdown;
+        saveSettings(state.settings);
+        if (ui.time) ui.time.textContent = engine.getTimeLabel(audio.currentTime || 0, state.countdown);
+      });
+    }
   }
 
   function bindAudioLifecycle() {
@@ -159,25 +206,25 @@ export function initApp() {
       if (ui.seek && !ui.seek.matches(':active')) ui.seek.value = String(audio.currentTime || 0);
       if (ui.time) ui.time.textContent = engine.getTimeLabel(audio.currentTime || 0, state.countdown);
     });
+
+    audio.addEventListener('ended', () => player.next(false));
   }
 
   function bindVisualizer() {
     const canvas = ui.viz;
     if (!canvas) return;
 
-    const visFactory = async () => {
-      const { createVisualizer } = await import('../audio/visualizer.js');
-      return createVisualizer;
-    };
-
     let vis = null;
 
+    const prepareVis = async () => {
+      const { createVisualizer } = await import('../audio/visualizer.js');
+      const lineColor = getComputedStyle(canvas).getPropertyValue('--lcd-txt').trim() || '#3dff7a';
+      vis = createVisualizer(canvas, engine.analyser, { lineColor });
+    };
+
     function tick() {
-      if (!vis) {
-        visFactory().then((createVisualizer) => {
-          const lineColor = getComputedStyle(canvas).getPropertyValue('--lcd-txt').trim() || '#3dff7a';
-          vis = createVisualizer(canvas, engine.analyser, { lineColor });
-        });
+      if (!vis && engine.analyser) {
+        prepareVis();
       }
 
       if (!vis) {
@@ -199,6 +246,8 @@ export function initApp() {
     requestAnimationFrame(tick);
   }
 
+  refreshRepeatToggle();
+  refreshShuffleToggle();
   updateVolumeUI();
   updatePanUI();
   bindPlayback();
@@ -211,6 +260,7 @@ export function initApp() {
     state,
     audio,
     engine,
+    player,
     setStatus,
     save: () => saveSettings(state.settings)
   };
