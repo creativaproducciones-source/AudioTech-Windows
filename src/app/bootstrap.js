@@ -1,6 +1,7 @@
 import { loadSettings, saveSettings } from '../state/store.js';
 import { createAudioEngine } from '../audio/manager.js';
 import { createPlayerFlow } from './playerFlow.js';
+import { createQueueRenderer } from './queueRenderer.js';
 
 export function initApp() {
   if (window.AudioTechRuntime) return window.AudioTechRuntime;
@@ -31,7 +32,9 @@ export function initApp() {
     dur: document.querySelector('#dur'),
     status: document.querySelector('#status'),
     viz: document.querySelector('#viz'),
-    preset: document.querySelector('#preset')
+    preset: document.querySelector('#preset'),
+    qfilter: document.querySelector('#qfilter'),
+    list: document.querySelector('#list')
   };
 
   const player = createPlayerFlow({
@@ -51,8 +54,78 @@ export function initApp() {
     queue: player.state.queue,
     currentIndex: player.state.currentIndex,
     shuffle: player.state.shuffle,
-    repeat: player.state.repeat
+    repeat: player.state.repeat,
+    selectedTrack: null,
+    upNext: null
   };
+
+  const queueRenderer = createQueueRenderer({
+    listEl: ui.list,
+    getTrackDisplayName: (track) => {
+      if (!track) return 'Desconocida';
+      const title = track.title || track.name || 'Sin título';
+      const artist = track.artist || '';
+      return artist ? `${artist} — ${title}` : title;
+    },
+    formatDuration: (value) => {
+      if (!Number.isFinite(value) || value <= 0) return '--:--';
+      const total = Math.floor(value);
+      const minutes = Math.floor(total / 60);
+      const seconds = total % 60;
+      return `${minutes}:${String(seconds).padStart(2, '0')}`;
+    },
+    onSelect: ({ track, index }) => {
+      state.selectedTrack = track;
+      renderQueue();
+    },
+    onDoubleClick: ({ index }) => {
+      if (Number.isInteger(index)) {
+        player.loadTrack(index, true);
+        renderQueue();
+      }
+    },
+    onRemove: (index) => {
+      player.removeFromQueue(index);
+      renderQueue();
+    },
+    onMove: (fromIndex, toIndex) => {
+      if (fromIndex === toIndex) return;
+      const queue = [...player.state.queue];
+      const [track] = queue.splice(fromIndex, 1);
+      queue.splice(toIndex, 0, track);
+      player.setQueue(queue);
+      if (state.currentIndex >= 0) {
+        const currentTrack = queue[state.currentIndex];
+        if (currentTrack) {
+          player.state.currentIndex = queue.indexOf(currentTrack);
+        }
+      }
+      renderQueue();
+    },
+    onToggleUpNext: (track) => {
+      state.upNext = track === state.upNext ? null : track;
+      player.setUpNext(state.upNext);
+      renderQueue();
+    },
+    onRename: (track, index) => {
+      const nextName = window.prompt('Renombrar pista', track.title || track.name || '');
+      if (!nextName || !nextName.trim()) return;
+      track.title = nextName.trim();
+      renderQueue();
+    }
+  });
+
+  function renderQueue() {
+    if (!ui.list) return;
+    const filterValue = ui.qfilter ? ui.qfilter.value : 'all';
+    queueRenderer.render({
+      queue: player.state.queue,
+      currentIndex: player.state.currentIndex,
+      selectedTrack: state.selectedTrack,
+      upNextTrack: state.upNext,
+      filterValue
+    });
+  }
 
   function setStatus(message) {
     if (ui.status) ui.status.textContent = message;
@@ -119,11 +192,17 @@ export function initApp() {
     }
 
     if (ui.prev) {
-      ui.prev.addEventListener('click', () => player.prev());
+      ui.prev.addEventListener('click', () => {
+        const ok = player.prev();
+        if (ok) renderQueue();
+      });
     }
 
     if (ui.next) {
-      ui.next.addEventListener('click', () => player.next(true));
+      ui.next.addEventListener('click', () => {
+        const ok = player.next(true);
+        if (ok) renderQueue();
+      });
     }
 
     if (ui.shuffle) {
@@ -246,6 +325,12 @@ export function initApp() {
     requestAnimationFrame(tick);
   }
 
+  function bindQueueUI() {
+    if (ui.qfilter) {
+      ui.qfilter.addEventListener('change', () => renderQueue());
+    }
+  }
+
   refreshRepeatToggle();
   refreshShuffleToggle();
   updateVolumeUI();
@@ -255,12 +340,15 @@ export function initApp() {
   bindSeek();
   bindAudioLifecycle();
   bindVisualizer();
+  bindQueueUI();
+  renderQueue();
 
   window.AudioTechRuntime = {
     state,
     audio,
     engine,
     player,
+    renderQueue,
     setStatus,
     save: () => saveSettings(state.settings)
   };
