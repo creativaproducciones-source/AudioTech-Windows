@@ -2,6 +2,8 @@ import { loadSettings, saveSettings } from '../state/store.js';
 import { createAudioEngine } from '../audio/manager.js';
 
 export function initApp() {
+  if (window.AudioTechRuntime) return window.AudioTechRuntime;
+
   const settings = loadSettings();
   const audio = new Audio();
   audio.preload = 'auto';
@@ -163,26 +165,38 @@ export function initApp() {
     const canvas = ui.viz;
     if (!canvas) return;
 
-    const { createVisualizer } = awaitImportAudio();
-    const analyser = engine.analyser;
-    const vis = createVisualizer(canvas, analyser, { lineColor: getComputedStyle(canvas).getPropertyValue('--lcd-txt').trim() || '#3dff7a' });
+    const visFactory = async () => {
+      const { createVisualizer } = await import('../audio/visualizer.js');
+      return createVisualizer;
+    };
+
+    let vis = null;
 
     function tick() {
+      if (!vis) {
+        visFactory().then((createVisualizer) => {
+          const lineColor = getComputedStyle(canvas).getPropertyValue('--lcd-txt').trim() || '#3dff7a';
+          vis = createVisualizer(canvas, engine.analyser, { lineColor });
+        });
+      }
+
+      if (!vis) {
+        requestAnimationFrame(tick);
+        return;
+      }
+
       const width = canvas.clientWidth || 100;
       const height = canvas.clientHeight || 90;
       const mode = state.settings.vizMode || 'bars';
+
       if (mode === 'scope') vis.drawScope(width, height);
       else if (mode === 'vu') vis.drawVU(width, height);
       else vis.drawBars(width, height);
+
       requestAnimationFrame(tick);
     }
 
     requestAnimationFrame(tick);
-  }
-
-  async function awaitImportAudio() {
-    const { createVisualizer } = await import('../audio/visualizer.js');
-    return { createVisualizer };
   }
 
   updateVolumeUI();
@@ -193,13 +207,15 @@ export function initApp() {
   bindAudioLifecycle();
   bindVisualizer();
 
-  return {
+  window.AudioTechRuntime = {
     state,
     audio,
     engine,
     setStatus,
     save: () => saveSettings(state.settings)
   };
+
+  return window.AudioTechRuntime;
 }
 
 window.AudioTechApp = {
